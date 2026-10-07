@@ -26,5 +26,4 @@
 ## 使用技術
 Python｜FastAPI｜PostgreSQL｜Jinja2｜HTML｜CSS
 
-## GitHub
-你的帳號 / freelance-platform
+
