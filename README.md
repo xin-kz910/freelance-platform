@@ -26,4 +26,7 @@
 ## 使用技術
 Python｜FastAPI｜PostgreSQL｜Jinja2｜HTML｜CSS
 
+## 專案性質
+本專案為軟體工程課程之三人小組專案。
+
 
