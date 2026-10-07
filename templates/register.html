@@ -1,0 +1,110 @@
+{% extends "base.html" %}
+{% block title %}註冊新帳號{% endblock %}
+
+{% block content %}
+{% set e_final = e if e is defined else request.query_params.get('e') %}
+{% set error_codes = ['user','phone','pwd','agree','role','fullname','email'] %}
+{% set has_error = (e_final in error_codes) %}
+
+<div class="v5-auth-grid">
+  
+  {# 左側：英雄區塊 (Hero) - 保持與登入頁一致的專業調性 #}
+  <div class="v5-auth-hero">
+    <h1 class="v5-hero-title">🚀 快速加入平台，開啟自由工作！</h1>
+    <p class="v5-hero-subtitle">註冊流程簡單便捷，只需一步即可選擇您的身份：委託專案或提供服務。</p>
+    <ul class="v5-hero-points">
+      <li>選擇角色： 您可以選擇成為委託人或接案人。</li>
+      <li>安全保障： 密碼使用現代加密技術儲存。</li>
+      <li>完全免費： 註冊並開始使用我們的核心功能。</li>
+    </ul>
+  </div>
+
+  {# 右側：註冊表單 #}
+  <div class="section-card v4-card v5-auth-card">
+    <h2 class="v5-card-title">建立新帳號</h2>
+    
+    <form class="form v5-auth-form" action="/register" method="post" novalidate>
+      
+      {% if has_error %}
+        <div class="form-error">
+          {% if e_final=='user' %}此帳號已被使用，請改用其他名稱。
+          {% elif e_final=='pwd' %}兩次輸入的密碼不一致。
+          {% elif e_final=='agree' %}請勾選並同意隱私權政策與服務條款。
+          {% elif e_final=='role' %}角色選擇有誤，請重新選擇「委託人」或「接案人」。
+          {% elif e_final=='fullname' %}請輸入姓名。
+          {% elif e_final=='email' %}請輸入有效的 Email。
+          {% else %}發生未知錯誤，請稍後再試。
+          {% endif %}
+        </div>
+      {% endif %}
+
+      <div class="v5-form-row-2">
+        <div class="field">
+          <label for="username">帳號（Username）</label>
+          <input id="username" name="username" type="text" required autocomplete="username"
+                 value="{{ (prefill.username if prefill is defined else '') | default('') }}">
+        </div>
+        <div class="field">
+          <label for="full_name">姓名</label>
+          <input id="full_name" name="full_name" type="text" required
+                 value="{{ (prefill.full_name if prefill is defined else '') | default('') }}">
+        </div>
+      </div>
+
+      <div class="v5-form-row-2">
+        <div class="field">
+          <label for="password">密碼</label>
+          <input id="password" name="password" type="password" required autocomplete="new-password">
+        </div>
+        <div class="field">
+          <label for="password2">確認密碼</label>
+          <input id="password2" name="password2" type="password" required autocomplete="new-password">
+        </div>
+      </div>
+      
+      <div class="v5-form-row-2">
+        <div class="field">
+          <label for="phone">電話（可選填）</label>
+          <input id="phone" name="phone" type="tel" inputmode="tel" placeholder="09xx-xxx-xxx"
+                 value="{{ (prefill.phone if prefill is defined else '') | default('') }}">
+        </div>
+        <div class="field">
+          <label for="email">Email（可選填）</label>
+          <input id="email" name="email" type="email" autocomplete="email"
+                 value="{{ (prefill.email if prefill is defined else '') | default('') }}">
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="role">您想扮演的角色</label>
+        <select id="role" name="role" required>
+          <option value="client" {{ 'selected' if (prefill is defined and prefill.role=='client') else '' }}>💼 委託人 (發佈專案)</option>
+          <option value="freelancer" {{ 'selected' if (prefill is defined and prefill.role=='freelancer') else '' }}>🎯 接案人 (提供服務)</option>
+        </select>
+      </div>
+
+      <div class="v5-agree-line">
+        <input type="checkbox" name="agree" id="agree"
+               {{ 'checked' if (prefill is defined and (prefill.agree==True or prefill.agree=='on')) else '' }}>
+        <label for="agree">我已閱讀並同意 <a href="/privacy" target="_blank">隱私權政策</a> 與 <a href="/terms" target="_blank">服務條款</a></label>
+      </div>
+
+      <div class="form-actions" style="margin-top:20px;">
+        <button class="btn btn-primary" type="submit" style="width:100%">註冊</button>
+      </div>
+
+      <p class="v5-auth-link">
+        已有帳號？ <a href="/login">馬上登入</a>
+      </p>
+    </form>
+  </div>
+</div>
+
+<script>
+  const params = new URLSearchParams(window.location.search);
+  if (params.get("ok") === "1") {
+    alert("✅ 註冊成功！將為您導向登入頁面。");
+    window.location.href = "/login";
+  }
+</script>
+{% endblock %}

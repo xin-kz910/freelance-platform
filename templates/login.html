@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}登入您的帳號{% endblock %}
+
+{% block content %}
+<div class="v5-auth-grid">
+  
+  {# 左側：英雄區塊 (Hero) #}
+  <div class="v5-auth-hero">
+    <h1 class="v5-hero-title">💼 專注您的專業，快速展開合作</h1>
+    <p class="v5-hero-subtitle">登入後，即可開始瀏覽專案、投標，或管理您發佈的委託項目。</p>
+    <ul class="v5-hero-points">
+      <li>委託人： 即時掌握所有報價和專案進度。</li>
+      <li>接案人： 輕鬆找到符合您技能的優質案件。</li>
+    </ul>
+  </div>
+
+  {# 右側：登入表單 #}
+  <div class="section-card v4-card v5-auth-card">
+    <h2 class="v5-card-title">登入帳號</h2>
+
+    <form action="/login" method="post" class="form v5-auth-form" novalidate>
+      <div class="field">
+        <label for="username">帳號（Username）</label>
+        <input id="username" name="username" type="text" required autocomplete="username" />
+      </div>
+      <div class="field">
+        <label for="password">密碼（Password）</label>
+        <input id="password" name="password" type="password" required autocomplete="current-password" />
+      </div>
+
+      {% if request.query_params.get('e') %}
+      <p class="form-error">帳號或密碼錯誤。</p>
+      {% endif %}
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary" style="width:100%">登入</button>
+      </div>
+      <p class="v5-auth-link">
+        還沒有帳號？ <a href="/register">前往註冊</a>
+      </p>
+    </form>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,66 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <title>{% block title %}工作委託平台{% endblock %}</title>
+  <link rel="stylesheet" href="/www/style.css" />
+  <link rel="icon" type="image/x-icon" href="/www/favicon.ico">
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+</head>
+<body>
+<header id="main-header" class="v4-header">
+  <div class="header-bar v4-bar">
+    <a href="/" class="header-logo v4-logo">💼 FreelanceHub</a>
+
+    <div class="header-actions v4-actions">
+      {% if request.session.get("user") %}
+        {% set u = request.session.get("user") %}
+        <span class="user-name v4-user-name">您好，{{ u.username }}</span>
+        <span class="user-role v4-role">{{ '委託人' if u.role=='client' else '接案人' }}</span>
+        <a href="/logout" class="btn btn-sm btn-outline v4-logout">登出</a>
+      {% else %}
+        <a href="/login" class="btn btn-sm btn-outline v4-login">登入</a>
+        <a href="/register" class="btn btn-sm btn-primary v4-register">註冊</a>
+      {% endif %}
+    </div>
+  </div>
+</header>
+
+
+<main class="container v4-container">
+  {% block content %}{% endblock %}
+</main>
+
+<footer class="footer v4-footer">
+  <div class="container v4-container">© 2025 FreelanceHub ｜ 專業服務委託平台</div>
+</footer>
+
+<script>
+// Query string notices (保留功能)
+const params = new URLSearchParams(window.location.search);
+if (params.get('upload') === 'success') { showNotice("✅ 檔案已上傳成功，等待委託人審核。", "success"); }
+if (params.get('action') === 'closed') { showNotice("✅ 專案已成功結案。", "success"); }
+if (params.get('action') === 'reopened') { showNotice("❗ 專案已退件，等待接案人重新上傳。", "warn"); }
+// 新增錯誤提示
+if (params.get('dup') === '1') { showNotice("🚫 您已投標過此專案。", "error"); }
+if (params.get('e') === 'edit_locked') { showNotice("🚫 專案已有報價，無法編輯。", "error"); }
+if (params.get('e') === 'delete_locked') { showNotice("🚫 專案已有報價，無法刪除。", "error"); }
+if (params.get('review_ok') === '1') { showNotice("✅ 評價已成功送出，感謝您的回饋。", "success"); }   
+if (params.get('review_done') === '1') { showNotice("🚫 您已對此專案完成評價。", "error"); }     
+
+
+function showNotice(msg, type){ 
+  const box=document.createElement('div'); 
+  box.className='notice '+type; 
+  box.innerText=msg; 
+  document.body.appendChild(box); 
+  setTimeout(()=>box.remove(),4000); 
+}
+</script>
+
+{% if request.session.get("user") and request.session.get("user").role == 'client' %}
+  <a href="/projects/create" class="fab v4-fab" title="新增專案"></a>
+{% endif %}
+
+</body>
+</html>

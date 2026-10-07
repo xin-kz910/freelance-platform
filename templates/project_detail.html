@@ -1,0 +1,1511 @@
+{% extends "base.html" %}
+{% block title %}{{ project.title }}{% endblock %}
+
+{% block content %}
+{% set s = (project.status|string)|trim|lower|replace(' ', '_') %}
+
+{# ✅ 保證 deliveries「最新在前」：用 delivery_id 反向排序最穩（通常越大越新） #}
+{% set sorted_deliveries = (deliveries | sort(attribute='delivery_id', reverse=True)) %}
+
+<div class="v5-detail-layout">
+
+  <section class="v5-main-content">
+
+    {# 1. 專案總覽區 #}
+    <header class="v5-overview-header">
+      <h1 class="v5-detail-title">{{ project.title }}</h1>
+
+      {% set status_map = {
+        'open':        ['投放中',   'ok'],
+        'in_progress': ['進行中',   'warn'],
+        'reopened':    ['被退件',   'danger'],
+        'closed':      ['已結案',   'muted']
+      } %}
+      {% set st = status_map.get(s, ['未知', 'muted']) %}
+      {% set is_open = (s == 'open') %}
+      {% set is_prog = (s == 'in_progress') %}
+      {% set is_reopened = (s == 'reopened') %}
+      {% set is_closed = (s == 'closed') %}
+
+      <div class="v5-meta-line">
+        <span class="v5-detail-tag {{ st[1] }}">{{ st[0] }}</span>
+
+        {% if project.budget is not none %}
+          <span class="v5-budget-tag">💰 預算：{{ project.budget }} 元</span>
+        {% endif %}
+
+        {% if project.deadline %}
+          <span class="v5-meta-text">投標截止：{{ project.deadline }}</span>
+        {% endif %}
+
+        <span class="v5-meta-text">委託人：{{ project.client_name }}</span>
+        <span class="v5-meta-text">建立：{{ project.created_at }}</span>
+        {% if project.updated_at and project.created_at and project.updated_at > project.created_at %}
+          <span class="v5-meta-text v5-edited-tag">已編輯</span>
+        {% endif %}
+      </div>
+
+      {% if request.query_params.get('pdf') == '0' %}
+        <div class="v4-alert danger" style="margin-top:10px;">提案文件只接受 PDF。</div>
+      {% endif %}
+      {% if request.query_params.get('d_pdf') == '0' %}
+        <div class="v4-alert danger" style="margin-top:10px;">結案檔案只接受 PDF。</div>
+      {% endif %}
+      {% if request.query_params.get('too_early') == '1' %}
+        <div class="v4-alert warn" style="margin-top:10px;">尚未到投標截止時間，暫時不能選標。</div>
+      {% endif %}
+      {% if request.query_params.get('closed') == '1' %}
+        <div class="v4-alert warn" style="margin-top:10px;">投標已截止，無法再投標。</div>
+      {% endif %}
+      {% if request.query_params.get('dup') == '1' %}
+        <div class="v4-alert warn" style="margin-top:10px;">你已經投標過此專案，不能重複投標。</div>
+      {% endif %}
+    </header>
+
+    {# 2. 專案描述 #}
+    <div class="section-card v4-card v5-description-card">
+      <h2 class="v5-section-title">專案描述</h2>
+
+      {% set pairs = [] %}
+      {% if project.req_type %}{% set pairs = pairs + [('需求類型', project.req_type)] %}{% endif %}
+      {% if project.req_deliverable %}{% set pairs = pairs + [('最終交付物', project.req_deliverable)] %}{% endif %}
+      {% if project.req_deadline %}{% set pairs = pairs + [('預期時程/截止日期', project.req_deadline)] %}{% endif %}
+      {% if project.req_hours %}{% set pairs = pairs + [('預計工時', project.req_hours)] %}{% endif %}
+
+      {% if pairs|length %}
+        <div class="v5-structured-output">
+          {% for k, v in pairs %}
+            <div class="v5-data-pair">
+              <span class="v5-data-key">{{ k }}</span>
+              <span class="v5-data-value">{{ v }}</span>
+            </div>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="v5-empty-state-small">尚未填寫需求細節。</div>
+      {% endif %}
+
+      <h3 class="v5-section-title v5-notes-title">額外補充與細節</h3>
+      <p class="v5-description-text v5-notes-content">
+        {{ project.req_notes if project.req_notes else '無額外補充說明。' }}
+      </p>
+    </div>
+
+    {# 乙方看案子時：只顯示委託人平均評價 + 查看按鈕 #}
+    {% if user and user.role == 'freelancer' %}
+      <div class="section-card v4-card" style="margin-top:14px;">
+        <h3 class="v5-section-title">委託人評價（{{ client_review_summary.count }}）</h3>
+
+        {% if client_review_summary.count > 0 %}
+          <div class="v5-flow-meta">
+            ⭐ 平均：
+            <span class="v5-avg-score">
+              {{ client_review_summary.avg_overall }}
+            </span>
+            / 5
+            （需求合理性：{{ client_review_summary.avg_dim1 }}｜
+            驗收難度：{{ client_review_summary.avg_dim2 }}｜
+            合作態度：{{ client_review_summary.avg_dim3 }}）
+          </div>
+
+          <div class="v5-review-btn-wrap">
+            <button type="button"
+                    class="btn btn-sm v5-review-dark-btn"
+                    onclick="openReviewsModal({{ project.client_id }}, 'client', '委託人歷來評論')">
+              查看所有評論
+            </button>
+          </div>
+
+        {% else %}
+          <div class="v5-empty-state-small">目前尚無評價。</div>
+        {% endif %}
+      </div>
+    {% endif %}
+
+    {# 3. 流程切換區：報價 / 上傳 / 投標表單 #}
+    {% if user %}
+    <div class="section-card v4-card v5-flow-panel">
+
+      {% if user.role == 'client' and is_prog and deliveries|length == 0 %}
+        <div class="v4-alert warn">⚠️ 專案進行中，等待接案人上傳結案檔案。</div>
+      {% elif user.role == 'client' and is_reopened %}
+        <div class="v4-alert danger">🚫 已退件。等待接案人重新上傳修正版。</div>
+      {% elif user.role == 'client' and is_closed %}
+        <div class="v4-alert success">✅ 專案已結案。</div>
+      {% endif %}
+
+      {# ========== 委託人：Issue / 歷史檔案 / 報價清單（✅未選標只顯示報價） ========== #}
+      {% if user.role == 'client' and user.id == project.client_id %}
+      {% set has_award = (project.awarded_freelancer_id is not none) %}
+
+        <div class="v5-tab-controls-container">
+
+          {% if has_award %}
+            {# ✅ 已選標：顯示三頁籤 #}
+            <input type="radio" name="detail_tab_client" id="c_tab_issue" checked class="v5-tab-input">
+            <label for="c_tab_issue" class="v5-tab-label">
+              待解決事項 (<span id="issueOpenCountClient">0</span>)
+            </label>
+
+            <input type="radio" name="detail_tab_client" id="c_tab_history" class="v5-tab-input">
+            <label for="c_tab_history" class="v5-tab-label"> 上傳紀錄 ({{ deliveries|length }})</label>
+          {% endif %}
+
+          <input type="radio" name="detail_tab_client" id="c_tab_bids" class="v5-tab-input"
+                 {% if not has_award %}checked{% endif %}>
+          <label for="c_tab_bids" class="v5-tab-label">報價清單 ({{ bids|length }})</label>
+
+          {% if has_award %}
+          {# =========================
+            TAB 1：Issue / 最新審核（只有選標後才會出現）
+            ========================= #}
+          <div class="v5-tab-content issue-content">
+
+            {% if sorted_deliveries and sorted_deliveries|length %}
+              {% set latest = sorted_deliveries[0] %}
+              {% set history = sorted_deliveries[1:] %}
+
+              <div class="v5-subsection">
+                <div class="v5-subsection-title">最新待審核檔案</div>
+
+                <div class="v5-list-item-flow v5-delivery-latest">
+                  <div class="v5-flow-info">
+                    <div class="v5-file-row">
+                      <div class="v5-file-left">
+                        <a href="/www/uploads/{{ latest.filename }}" target="_blank" class="v5-flow-title">
+                          🔗 {{ latest.filename }}
+                        </a>
+
+                        <div class="v5-flow-meta">
+                          上傳者：{{ latest.freelancer }} ｜ 時間：{{ latest.created_at }}
+                        </div>
+
+                        {% if latest.note %}
+                          <div class="v5-flow-desc" style="margin-top:6px;">
+                            說明：<em>{{ latest.note }}</em>
+                          </div>
+                        {% endif %}
+                      </div>
+
+                      <div class="v5-file-right">
+                        <a class="btn btn-sm btn-outline" href="/download/delivery/{{ latest.delivery_id }}">下載</a>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="v5-subsection" style="margin-top:16px;">
+
+              <div class="v5-issues-head">
+                <div class="v5-subsection-title v5-issues-title">待解決事項 Issues</div>
+
+                <button type="button" class="btn btn-primary btn-sm v5-issues-addbtn" onclick="openCreateIssueModal()">
+                  ➕ 新增 Issue
+                </button>
+              </div>
+
+              <div class="issueAlertArea"></div>
+
+              <div class="issuesList v5-scroll-box" style="max-height:420px;">
+                <div class="v5-empty-state-small">載入中...</div>
+              </div>
+            </div>
+
+            {% else %}
+              <div class="v5-empty-state-small">目前尚無結案檔案，因此無法建立 Issue。</div>
+            {% endif %}
+
+          </div>
+
+          {# =========================
+          TAB 2：歷史檔案（只有選標後才會出現）
+          ========================= #}
+        <div class="v5-tab-content history-content">
+          {% if sorted_deliveries and sorted_deliveries|length %}
+
+            <div class="v5-subsection">
+              <div class="v5-subsection-title">
+                上傳紀錄 ({{ deliveries|length }})
+              </div>
+
+              <div class="v5-scroll-box">
+                <ul class="v5-clean-list">
+                  {% for d in sorted_deliveries %}
+                    {% set is_latest = (loop.index0 == 0) %}
+
+                    <li class="v5-list-item-flow v5-delivery-item {{ 'v5-delivery-latest' if is_latest else '' }}">
+                      <div class="v5-flow-info">
+                        <div class="v5-file-row">
+
+                          <div class="v5-file-left">
+                            <a href="/www/uploads/{{ d.filename }}"
+                              target="_blank"
+                              class="v5-flow-title">
+                              {% if is_latest %}⭐ 最新審核檔案{% else %}#{{ loop.index }}{% endif %}
+                              🔗 {{ d.filename }}
+                            </a>
+
+                            <div class="v5-flow-meta">
+                              上傳者：{{ d.freelancer }} ｜ 時間：{{ d.created_at }}
+                            </div>
+
+                            {% if d.note %}
+                              <div class="v5-flow-desc" style="margin-top:6px;">
+                                說明：<em>{{ d.note }}</em>
+                              </div>
+                            {% endif %}
+                          </div>
+
+                          <div class="v5-file-right">
+                            <a class="btn btn-sm btn-outline"
+                              href="/download/delivery/{{ d.delivery_id }}">
+                              下載
+                            </a>
+                          </div>
+
+                        </div>
+                      </div>
+                    </li>
+                  {% endfor %}
+                </ul>
+              </div>
+            </div>
+
+          {% else %}
+            <div class="v5-empty-state-small">目前尚無結案檔案。</div>
+          {% endif %}
+        </div>
+        {% endif %}
+
+          {# =========================
+            TAB 3：報價清單（永遠存在）
+            ========================= #}
+          <div class="v5-tab-content bids-content">
+            {% if bids and bids|length %}
+              <ul class="v5-clean-list">
+                {% for b in bids %}
+                  <li class="v5-list-item-flow v5-bid-item">
+                    <div class="v5-bid-main">
+                      <div class="v5-bid-price-group">
+                        <div class="v5-bid-name-row">
+                          <div class="v5-bid-name-left">
+                            <span class="v5-flow-title">👤 {{ b.freelancer }}</span>
+
+                            {% set fr = freelancer_review_map.get(b.freelancer_id) %}
+                            <button type="button"
+                                    class="v5-btn-dark v5-btn-mini"
+                                    {% if not fr or fr.count == 0 %}disabled{% endif %}
+                                    onclick="openReviewsModal({{ b.freelancer_id }}, 'freelancer', '接案人歷來評論：{{ b.freelancer }}')">
+                              查看評價
+                            </button>
+                          </div>
+                        </div>
+
+                        {% set fr = freelancer_review_map.get(b.freelancer_id) %}
+                        {% if fr %}
+                          <div class="v5-flow-meta">
+                            接案人平均：{{ fr.avg_overall if fr.avg_overall is not none else '—' }} / 5
+                            （品質：{{ fr.avg_dim1 if fr.avg_dim1 is not none else '—' }}｜
+                            效率：{{ fr.avg_dim2 if fr.avg_dim2 is not none else '—' }}｜
+                            態度：{{ fr.avg_dim3 if fr.avg_dim3 is not none else '—' }}｜
+                            共 {{ fr.count }} 筆）
+                          </div>
+                        {% endif %}
+
+                        <span class="v5-bid-price-value"><b>{{ b.price }}</b> 元</span>
+                      </div>
+
+                      <div class="v5-bid-meta-group">
+                        <span class="v5-flow-meta">({{ b.created_at }})</span>
+                      </div>
+                    </div>
+
+                    <p class="v5-flow-desc">留言：<em>{{ b.message }}</em></p>
+
+                    {% if b.proposal_filename %}
+                      <div class="v5-flow-desc" style="margin-top:6px;">
+                        <div class="v5-file-row">
+                          <div class="v5-file-left">
+                            提案 PDF：
+                            <a href="/download/proposal/{{ b.id }}" target="_blank">
+                              {{ b.proposal_original_name if b.proposal_original_name else b.proposal_filename }}
+                            </a>
+                          </div>
+                          <div class="v5-file-right">
+                            <a class="btn btn-sm btn-outline" href="/download/proposal/{{ b.id }}">下載</a>
+                          </div>
+                        </div>
+                      </div>
+                    {% endif %}
+
+                    {% if is_open %}
+                      <form action="/projects/{{ project.id }}/award/{{ b.id }}" method="post" class="v5-flow-action" style="margin-top:10px;">
+                        <button type="submit" class="btn btn-success btn-sm">🏆 接受報價</button>
+                      </form>
+                    {% elif project.awarded_bid_id == b.id %}
+                      <span class="v5-flow-tag success">★ 已接受</span>
+                    {% endif %}
+                  </li>
+                {% endfor %}
+              </ul>
+            {% else %}
+              <div class="v5-empty-state-small">目前尚無報價。</div>
+            {% endif %}
+          </div>
+
+          {# =========================
+            ✅ 新增 Issue 的 Modal（按鈕才打開）
+            ========================= #}
+          <div id="createIssueModal" class="v5-modal" aria-hidden="true">
+            <div class="v5-modal-backdrop" onclick="closeCreateIssueModal()"></div>
+
+            <div class="v5-modal-card" role="dialog" aria-modal="true" aria-labelledby="createIssueModalTitle">
+              <div class="v5-modal-head">
+                <h3 id="createIssueModalTitle" class="v5-section-title" style="margin:0;">新增 Issue</h3>
+                <button type="button" class="v5-modal-x" onclick="closeCreateIssueModal()">✕</button>
+              </div>
+
+              <div class="v5-modal-body">
+                {% if sorted_deliveries and sorted_deliveries|length %}
+                  <form id="issueCreateForm"
+                        action="/projects/{{ project.id }}/issues/create"
+                        method="post"
+                        class="form v5-upload-form">
+
+                    <input type="hidden" name="delivery_id" value="{{ sorted_deliveries[0].delivery_id }}">
+
+                    <div class="field">
+                      <label>Issue 標題（必填）</label>
+                      <input type="text" name="title" required maxlength="80" placeholder="例如：PDF 第 3 頁的流程圖缺少例外狀況">
+                    </div>
+
+                    <div class="field">
+                      <label>Issue 說明（必填）</label>
+                      <textarea name="description" rows="3" required placeholder="請描述希望接案人修正的點、驗收標準…"></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                      <button type="submit" class="btn btn-primary">➕ 送出 Issue</button>
+                      <button type="button" class="btn btn-outline" onclick="closeCreateIssueModal()">取消</button>
+                    </div>
+                  </form>
+                {% else %}
+                  <div class="v5-empty-state-small">目前尚無結案檔案，無法新增 Issue。</div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+      {# ========== ✅ 接案人：Issue / 歷史檔案 / 我的報價（得標者才有三頁籤） ========== #}
+      {% elif user.role == 'freelancer' %}
+
+        {# ✅ 接案人自己的上傳：用 sorted_deliveries（最新在前）再過濾 #}
+        {% set my_uploads = (sorted_deliveries | selectattr('freelancer_id','equalto', user.id) | list) %}
+        {% set my_latest = my_uploads[0] if my_uploads|length else None %}
+
+        <div class="v5-tab-controls-container">
+
+          {% if user.id == project.awarded_freelancer_id %}
+            <input type="radio" name="detail_tab_freelancer" id="f_tab_issue" checked class="v5-tab-input">
+            <label for="f_tab_issue" class="v5-tab-label">
+              待解決事項 (<span id="issueOpenCountFreelancer">0</span>)
+            </label>
+
+            <input type="radio" name="detail_tab_freelancer" id="f_tab_history" class="v5-tab-input">
+            {# ✅ 這裡改成 my_uploads|length（包含最新那筆） #}
+            <label for="f_tab_history" class="v5-tab-label">歷史檔案 ({{ my_uploads|length }})</label>
+
+            <input type="radio" name="detail_tab_freelancer" id="f_tab_mybid" class="v5-tab-input">
+            <label for="f_tab_mybid" class="v5-tab-label">我的報價</label>
+          {% else %}
+            <input type="radio" name="detail_tab_freelancer" id="f_tab_mybid" checked class="v5-tab-input">
+            <label for="f_tab_mybid" class="v5-tab-label">我的報價</label>
+          {% endif %}
+
+          {% if user.id == project.awarded_freelancer_id %}
+            {# =========================
+              TAB 1：Issue + 上傳（得標者）
+              ========================= #}
+            <div class="v5-tab-content issue-content">
+
+              {% if is_prog or is_reopened %}
+
+                {% if my_uploads|length > 0 and not is_reopened %}
+                  <div class="v4-alert info">✅ 你已上傳結案檔案，請等待委託人審核。</div>
+                {% else %}
+                  <h3 class="v5-section-title v5-section-title-form">
+                    上傳結案檔案{% if is_reopened %}（重新上傳）{% endif %}
+                  </h3>
+
+                  {% if is_reopened %}
+                    <p class="v4-alert danger">⚠️ 專案已被退件，請重新上傳修正版！</p>
+                  {% endif %}
+
+                  {% if request.query_params.get('filedup') == '1' %}
+                    <div class="v4-alert danger">你已上傳過檔案。請委託人按「退件」後再上傳新版。</div>
+                  {% endif %}
+
+                  <form action="/deliveries/{{ project.id }}" method="post" enctype="multipart/form-data" class="form v5-upload-form">
+                    <div class="field">
+                      <label>檔案（PDF）</label>
+                      <input type="file" name="file" accept="application/pdf,.pdf" required>
+                    </div>
+                    <div class="field">
+                      <label>說明（可選）</label>
+                      <textarea name="note" rows="3" placeholder="簡述本次上傳的修正內容"></textarea>
+                    </div>
+                    <div class="form-actions">
+                      <button type="submit" class="btn btn-primary">上傳檔案</button>
+                    </div>
+                  </form>
+                {% endif %}
+
+              {% endif %}
+
+              <div class="v5-subsection" style="margin-top:16px;">
+                <div class="v5-subsection-title">最新待審核檔案</div>
+
+                {% if my_latest %}
+                  <div class="v5-list-item-flow v5-delivery-latest">
+                    <div class="v5-flow-info">
+                      <div class="v5-file-row">
+                        <div class="v5-file-left">
+                          <a href="/www/uploads/{{ my_latest.filename }}" target="_blank" class="v5-flow-title">
+                            🔗 {{ my_latest.filename }}
+                          </a>
+
+                          <div class="v5-flow-meta">
+                            上傳者：{{ my_latest.freelancer }} ｜ 時間：{{ my_latest.created_at }}
+                          </div>
+
+                          {% if my_latest.note %}
+                            <div class="v5-flow-desc" style="margin-top:6px;">
+                              說明：<em>{{ my_latest.note }}</em>
+                            </div>
+                          {% endif %}
+                        </div>
+
+                        <div class="v5-file-right">
+                          <a class="btn btn-sm btn-outline" href="/download/delivery/{{ my_latest.delivery_id }}">下載</a>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                {% else %}
+                  <div class="v5-empty-state-small">尚無上傳紀錄。</div>
+                {% endif %}
+              </div>
+
+              <div class="v5-subsection" style="margin-top:16px;">
+                <div class="v5-subsection-title">待解決事項 Issues</div>
+                <div class="issueAlertArea"></div>
+
+                <div class="issuesList v5-scroll-box" style="max-height:420px;">
+                  <div class="v5-empty-state-small">載入中...</div>
+                </div>
+              </div>
+
+            </div>
+
+            {# =========================
+              TAB 2：歷史檔案（✅ 改成顯示 my_uploads 全部，第一筆就是最新審核檔案）
+              ========================= #}
+            <div class="v5-tab-content history-content">
+              <div class="v5-subsection">
+                <div class="v5-subsection-title">歷史檔案 ({{ my_uploads|length }})</div>
+
+                {% if my_uploads|length %}
+                  <div class="v5-scroll-box">
+                    <ul class="v5-clean-list">
+                      {% for d in my_uploads %}
+                        {% set is_latest = (loop.index0 == 0) %}
+                        <li class="v5-list-item-flow v5-delivery-item {{ 'v5-delivery-latest' if is_latest else '' }}">
+                          <div class="v5-flow-info">
+                            <div class="v5-file-row">
+
+                              <div class="v5-file-left">
+                                <a href="/www/uploads/{{ d.filename }}" target="_blank" class="v5-flow-title">
+                                  {% if is_latest %}⭐ 最新審核檔案{% else %}#{{ loop.index }}{% endif %}
+                                  🔗 {{ d.filename }}
+                                </a>
+
+                                <div class="v5-flow-meta">
+                                  上傳者：{{ d.freelancer }} ｜ 時間：{{ d.created_at }}
+                                </div>
+
+                                {% if d.note %}
+                                  <div class="v5-flow-desc" style="margin-top:6px;">
+                                    說明：<em>{{ d.note }}</em>
+                                  </div>
+                                {% endif %}
+                              </div>
+
+                              <div class="v5-file-right">
+                                <a class="btn btn-sm btn-outline" href="/download/delivery/{{ d.delivery_id }}">下載</a>
+                              </div>
+
+                            </div>
+                          </div>
+                        </li>
+                      {% endfor %}
+                    </ul>
+                  </div>
+                {% else %}
+                  <div class="v5-empty-state-small">尚無歷史檔案。</div>
+                {% endif %}
+              </div>
+            </div>
+          {% endif %}
+
+          {# =========================
+            TAB 3：我的報價（原本維持）
+            ========================= #}
+          <div class="v5-tab-content mybid-content">
+            {% if my_bid %}
+              <div class="v5-list-item-flow">
+                <div class="v5-bid-main">
+                  <div class="v5-bid-price-group">
+                    <span class="v5-flow-title">💰 我的報價</span>
+                    <span class="v5-bid-price-value"><b>{{ my_bid.price }}</b> 元</span>
+                  </div>
+                </div>
+
+                <p class="v5-flow-desc">留言：<em>{{ my_bid.message }}</em></p>
+
+                {% if my_bid.proposal_filename %}
+                  <div class="v5-flow-desc" style="margin-top:6px;">
+                    <div class="v5-file-row">
+                      <div class="v5-file-left">
+                        我的提案 PDF：
+                        <a href="/www/uploads/proposals/{{ my_bid.proposal_filename }}" target="_blank">
+                          {{ my_bid.proposal_original_name if my_bid.proposal_original_name else my_bid.proposal_filename }}
+                        </a>
+                      </div>
+                      <div class="v5-file-right">
+                        <a class="btn btn-sm btn-outline" href="/download/proposal/{{ my_bid.id }}">下載</a>
+                      </div>
+                    </div>
+                  </div>
+                {% endif %}
+
+                {% if project.awarded_freelancer_id == user.id %}
+                  <span class="v5-flow-tag success">🏆 已得標</span>
+                {% elif is_open %}
+                  <span class="v5-flow-tag info">📝 等待審核</span>
+                {% endif %}
+              </div>
+
+            {% else %}
+              {% if is_open %}
+                <div class="v5-empty-state-small">尚未提交報價。</div>
+
+                <h3 class="v5-section-title v5-section-title-form" style="margin-top:20px;">我要報價</h3>
+                <form action="/bids/{{ project.id }}" method="post" enctype="multipart/form-data" class="form v5-bid-form">
+                  <div class="field">
+                    <label>金額（NTD）</label>
+                    <input type="number" name="price" min="0" step="100" required>
+                  </div>
+
+                  <div class="field">
+                    <label>留言</label>
+                    <textarea name="message" rows="3" placeholder="簡述您的工時/交付物/注意事項"></textarea>
+                  </div>
+
+                  <div class="field">
+                    <label>提案文件（PDF 必填）</label>
+                    <input type="file" name="proposal_file" accept="application/pdf,.pdf" required>
+                    <div class="v5-help-text">請上傳 PDF。</div>
+                  </div>
+
+                  <div class="form-actions">
+                    <button type="submit" class="btn btn-primary">送出報價</button>
+                  </div>
+                </form>
+              {% else %}
+                <div class="v5-empty-state-small">此專案已結標，您未投標。</div>
+              {% endif %}
+            {% endif %}
+          </div>
+
+        </div>
+
+      {% endif %}
+    </div>
+    {% endif %}
+
+    {% if not user and is_open %}
+    <div class="section-card v4-card v5-flow-panel">
+      <h3 class="v5-section-title">我要報價</h3>
+      <p class="v4-alert info">
+        請先 <a href="/login" class="v5-link-in-alert">登入</a> 或
+        <a href="/register" class="v5-link-in-alert">註冊接案人帳號</a> 後才能投標。
+      </p>
+    </div>
+    {% endif %}
+
+    <div style="margin-top:20px;">
+      {% set back_url = '/' %}
+      {% if user %}
+        {% if is_open %}{% set back_url = '/?tab=open' %}
+        {% elif is_prog or is_reopened %}{% set back_url = '/?tab=progress' %}
+        {% elif is_closed %}{% set back_url = '/?tab=closed' %}{% endif %}
+      {% endif %}
+      <a href="{{ back_url }}" class="btn btn-outline">↩ 回列表</a>
+    </div>
+
+  </section>
+
+  {% if user %}
+  <aside class="v5-sidebar-panel">
+    <div class="v5-action-box">
+      <h3 class="v5-section-title">專案操作</h3>
+      {% if user and is_closed %}
+      <button type="button"
+              class="btn btn-primary v5-btn-block"
+              onclick="openReviewModal()">
+        ⭐ 合作評價
+      </button>
+
+      <!-- ✅ Modal（預設關閉） -->
+      <div id="reviewModal" class="v5-modal" aria-hidden="true">
+        <div class="v5-modal-backdrop" onclick="closeReviewModal()"></div>
+
+        <div class="v5-modal-card" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
+          <div class="v5-modal-head">
+            <h3 id="reviewModalTitle" class="v5-section-title" style="margin:0;">合作評價</h3>
+            <button type="button" class="v5-modal-x" onclick="closeReviewModal()">✕</button>
+          </div>
+
+          <div class="v5-modal-body">
+            {% if review_open %}
+              <div class="v5-flow-meta">可評價期限：至 {{ review_deadline }}</div>
+
+              {% if user.role == 'client' and user.id == project.client_id and project.awarded_freelancer_id %}
+                {% if not my_reviewed.to_freelancer %}
+                  <form action="/projects/{{ project.id }}/review" method="post" class="form" style="margin-top:10px;">
+                    <input type="hidden" name="target" value="freelancer">
+
+                    <div class="field">
+                      <label>產出品質</label>
+                      <div class="star-rating">
+                        {% for i in range(5, 0, -1) %}
+                          <input type="radio" id="f-dim1-{{ i }}" name="dim1" value="{{ i }}" required>
+                          <label for="f-dim1-{{ i }}">★</label>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label>執行效率</label>
+                      <div class="star-rating">
+                        {% for i in range(5, 0, -1) %}
+                          <input type="radio" id="f-dim2-{{ i }}" name="dim2" value="{{ i }}" required>
+                          <label for="f-dim2-{{ i }}">★</label>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label>合作態度</label>
+                      <div class="star-rating">
+                        {% for i in range(5, 0, -1) %}
+                          <input type="radio" id="f-dim3-{{ i }}" name="dim3" value="{{ i }}" required>
+                          <label for="f-dim3-{{ i }}">★</label>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label>總體評論</label>
+                      <textarea name="comment" rows="3"  required placeholder="可填合作心得、優缺點（選填）"></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                      <button class="btn btn-primary" type="submit">送出對乙方評價</button>
+                      <button type="button" class="btn btn-outline" onclick="closeReviewModal()">取消</button>
+                    </div>
+                  </form>
+                {% else %}
+                  <div class="v4-alert success" style="margin-top:10px;">✅ 你已完成對乙方的評價。</div>
+                {% endif %}
+              {% endif %}
+
+              {% if user.role == 'freelancer' and user.id == project.awarded_freelancer_id %}
+                {% if not my_reviewed.to_client %}
+                  <form action="/projects/{{ project.id }}/review" method="post" class="form" style="margin-top:14px;">
+                    <input type="hidden" name="target" value="client">
+
+                    <div class="field">
+                      <label>需求合理性</label>
+                      <div class="star-rating">
+                        {% for i in range(5, 0, -1) %}
+                          <input type="radio" id="c-dim1-{{ i }}" name="dim1" value="{{ i }}" required>
+                          <label for="c-dim1-{{ i }}">★</label>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label>驗收難度</label>
+                      <div class="star-rating">
+                        {% for i in range(5, 0, -1) %}
+                          <input type="radio" id="c-dim2-{{ i }}" name="dim2" value="{{ i }}" required>
+                          <label for="c-dim2-{{ i }}">★</label>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label>合作態度</label>
+                      <div class="star-rating">
+                        {% for i in range(5, 0, -1) %}
+                          <input type="radio" id="c-dim3-{{ i }}" name="dim3" value="{{ i }}" required>
+                          <label for="c-dim3-{{ i }}">★</label>
+                        {% endfor %}
+                      </div>
+                    </div>
+
+                    <div class="field">
+                      <label>總體評論</label>
+                      <textarea name="comment" rows="3" required placeholder="可填合作心得、優缺點"></textarea>
+                    </div>
+
+                    <div class="form-actions">
+                      <button class="btn btn-primary" type="submit">送出對甲方評價</button>
+                      <button type="button" class="btn btn-outline" onclick="closeReviewModal()">取消</button>
+                    </div>
+                  </form>
+                {% else %}
+                  <div class="v4-alert success" style="margin-top:10px;">✅ 你已完成對甲方的評價。</div>
+                {% endif %}
+              {% endif %}
+
+            {% else %}
+              <div class="v4-alert warn">⚠️ 已超過評價期限（結案後 {{ review_window_days }} 天內）。</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      {% endif %}
+
+      <div class="v5-action-buttons-group">
+      {% if user.role == 'client' and user.id == project.client_id and is_open %}
+        <a href="/projects/{{ project.id }}/edit" class="btn btn-outline v5-action-btn v5-btn-block">✎ 編輯專案內容</a>
+        <form action="/projects/{{ project.id }}/delete" method="post"
+              onsubmit="return confirm('確定刪除這個專案嗎？此動作無法復原。');">
+          <button type="submit" class="btn btn-danger v5-btn-block">🗑️ 刪除專案</button>
+        </form>
+
+      {% elif user.role == 'client' and user.id == project.client_id and is_prog %}
+        <h4 class="v5-action-status-text">當前狀態：待審核</h4>
+        {% if deliveries and deliveries|length %}
+          {% if request.query_params.get('close') == 'has_open_issues' %}
+            <div class="v4-alert warn" style="margin-bottom:10px;">
+              ⚠️ 還有未完成的 Issue，請先全部處理完成後才能結案。
+            </div>
+          {% endif %}
+          <form action="/projects/{{ project.id }}/close" method="post">
+            <button type="submit" class="btn btn-success v5-btn-block">✅ 確認結案</button>
+          </form>
+          <form action="/projects/{{ project.id }}/reject" method="post">
+            <button type="submit" class="btn btn-danger v5-btn-block">🚫 退件 (要求重傳)</button>
+          </form>
+        {% else %}
+          <p class="v5-help-text">⚠️ 尚無上傳檔案，無法進行結案或退件操作。</p>
+        {% endif %}
+
+      {% elif user.role == 'client' and user.id == project.client_id and is_reopened %}
+        <h4 class="v5-action-status-text">當前狀態：退件中（等待重新上傳）</h4>
+        <p class="v5-help-text">你已退件給接案人，需等對方重新上傳修正版後才能再次審核。</p>
+      {% else %}
+        {% if is_reopened %}
+          <p class="v4-alert danger v5-btn-block">🚫 專案已被退件。</p>
+        {% elif is_closed %}
+          <p class="v4-alert success v5-btn-block">✅ 此專案已結案。</p>
+        {% elif user.role == 'freelancer' and user.id != project.awarded_freelancer_id and not is_open %}
+          <p class="v5-help-text">此專案已結標給其他接案人。</p>
+        {% elif is_open and user.role == 'freelancer' and my_bid %}
+          <p class="v5-help-text">✅ 您已投標，等待委託人選標。</p>
+        {% elif is_open and user.role == 'freelancer' and not my_bid %}
+          <p class="v5-help-text">💡 立即前往左側投標。</p>
+        {% endif %}
+      {% endif %}
+      </div>
+    </div>
+  </aside>
+  {% endif %}
+
+  <!-- ===== Reviews Modal ===== -->
+  <div id="reviewsModal" class="v5-modal" aria-hidden="true">
+    <div class="v5-modal-backdrop" onclick="closeReviewsModal()"></div>
+
+    <div class="v5-modal-card" role="dialog" aria-modal="true" aria-labelledby="reviewsModalTitle">
+      <div class="v5-modal-head">
+        <h3 id="reviewsModalTitle" class="v5-section-title" style="margin:0;">歷來評論</h3>
+        <button type="button" class="v5-modal-x" onclick="closeReviewsModal()">✕</button>
+      </div>
+
+      <div class="v5-modal-body">
+        <div id="reviewsModalMeta" class="v5-flow-meta" style="margin-bottom:10px;"></div>
+        <div id="reviewsModalList"></div>
+
+        <div class="v5-modal-pagination" style="margin-top:12px; display:flex; gap:8px; justify-content:flex-end;">
+          <button id="reviewsPrevBtn" type="button" class="btn btn-sm btn-outline">上一頁</button>
+          <button id="reviewsNextBtn" type="button" class="btn btn-sm btn-outline">下一頁</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Issue Modal ===== -->
+  <div id="issueModal" class="v5-modal" aria-hidden="true">
+    <div class="v5-modal-backdrop" onclick="closeIssueModal()"></div>
+
+    <div class="v5-modal-card" role="dialog" aria-modal="true">
+      <div class="v5-modal-head">
+        <h3 id="issueModalTitle" class="v5-section-title" style="margin:0;">Issue</h3>
+        <button type="button" class="v5-modal-x" onclick="closeIssueModal()">✕</button>
+      </div>
+
+      <div class="v5-modal-body">
+        <div id="issueModalMeta" class="v5-flow-meta"></div>
+        <div id="issueModalDesc" class="v5-flow-desc" style="margin:8px 0;"></div>
+
+        <hr>
+
+        <div id="issueModalComments" class="v5-scroll-box" style="max-height:260px;">
+          <div class="v5-empty-state-small">載入中...</div>
+        </div>
+
+        <form id="issueCommentForm" method="post" class="form" style="margin-top:12px;">
+          <div class="field">
+            <label>留言</label>
+            <textarea name="content" rows="2" required></textarea>
+          </div>
+
+          <!-- ✅ 底部左右操作列 -->
+          <div class="issue-modal-actions">
+            <div class="issue-actions-left">
+              <button type="submit" class="btn btn-primary btn-sm">
+                💬 送出留言
+              </button>
+            </div>
+
+            <div class="issue-actions-right" id="issueResolveArea">
+              <!-- JS 動態插入「設為已完成」 -->
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+/* ✅ 檔案列：左內容 + 右下載按鈕 */
+.v5-file-row{
+  display:flex;
+  align-items:flex-start;
+  width: 100%;
+  padding-right: 12px;
+  box-sizing: border-box;
+}
+.v5-file-left{ flex: 1 1 auto; min-width: 0; }
+.v5-flow-title{
+  display: block;
+  line-height: 1.35;
+  margin-bottom: 4px;
+  word-break: break-all;
+}
+.v5-flow-meta{
+  margin-top:8px;
+  display: block;
+  opacity: .8;
+  font-size: 13px;
+  line-height: 1.3;
+}
+.v5-file-right{
+  flex: 0 0 auto;
+  margin-left: auto;
+  padding-left: 12px;
+  display: flex;
+  justify-content: flex-end;
+}
+.v5-edited-tag{
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid rgba(0,0,0,.12);
+  background: rgba(0,0,0,.04);
+  font-size: 12px;
+}
+.v5-subsection-title{ font-weight: 700; font-size: 14px; margin: 6px 0 10px; }
+.v5-delivery-latest{ border: 1px solid rgba(249, 179, 81, 0.886); background: rgba(249, 179, 81, 0.244); }
+.v5-scroll-box{ max-height: 320px; overflow-y: auto; padding-right: 6px; }
+.v5-delivery-latest:hover{ background: transparent; border-color: var(--line); box-shadow: none; }
+.v5-list-item-flow.v5-delivery-latest:hover{ background: transparent; }
+
+/* ===== Modal ===== */
+.v5-modal{ display:none; position:fixed; inset:0; z-index:9999; }
+.v5-modal.is-open{ display:block; }
+.v5-modal-backdrop{ position:absolute; inset:0; background: rgba(0,0,0,.45); }
+.v5-modal-card{
+  position: relative;
+  width: min(560px, calc(100% - 32px));
+  margin: 14vh auto;
+  background: var(--card);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: 0 18px 60px rgba(0,0,0,.25);
+  overflow: hidden;
+}
+.v5-modal-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  padding: 14px 16px;
+  border-bottom: 1px solid var(--line);
+  background: rgba(0,0,0,.02);
+}
+.v5-modal-x{
+  border: 1px solid var(--line);
+  background: transparent;
+  border-radius: 10px;
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.v5-modal-body{ padding: 14px 16px 16px; max-height: 70vh; overflow: auto; }
+
+/* ===== 星星評分 ===== */
+.star-rating{ display: inline-flex; flex-direction: row-reverse; gap: 4px; }
+.star-rating input{ display: none; }
+.star-rating label{ font-size: 26px; color: #d1d5db; cursor: pointer; transition: color .2s; }
+.star-rating label:hover, .star-rating label:hover ~ label{ color: #f59e0b; }
+.star-rating input:checked ~ label{ color: #f59e0b; }
+
+.v5-bid-name-row{ display:flex; align-items:center; gap:10px; justify-content:space-between; }
+.v5-bid-name-row .v5-flow-title{ margin:0; }
+.v5-bid-name-left{ display:flex; align-items:center; gap:10px; }
+
+.v5-btn-dark{
+  background: var(--brand);
+  border: 1px solid var(--brand);
+  color: #fff;
+  border-radius: 10px;
+  cursor: pointer;
+}
+.v5-btn-dark:hover{ background: var(--brand-light); border-color: var(--brand-light); }
+.v5-btn-dark:disabled{ opacity:.45; cursor:not-allowed; }
+.v5-btn-mini{ padding: 4px 10px; font-size: 12px; line-height: 1.2; }
+
+.v5-review-btn-wrap{ margin-top: 20px; }
+.v5-review-dark-btn{
+  background: #1f2937;
+  color: #ffffff;
+  border: 1px solid #1f2937;
+  padding: 8px 6px;
+  font-size: 13px;
+  line-height: 1.2;
+  border-radius: 8px;
+  opacity: 0.92;
+}
+.v5-review-dark-btn:hover{ background: #111827; border-color: #111827; opacity: 1; }
+.v5-avg-score{ color: #f59e0b; font-weight: 700; font-size: 18px; margin: 0 2px; }
+
+/* ===== Tab 顯示控制 ===== */
+.v5-tab-content{ display:none; }
+#c_tab_issue:checked ~ .issue-content{ display:block; }
+#c_tab_history:checked ~ .history-content{ display:block; }
+#c_tab_bids:checked ~ .bids-content{ display:block; }
+#f_tab_issue:checked ~ .issue-content{ display:block; }
+#f_tab_history:checked ~ .history-content{ display:block; }
+#f_tab_mybid:checked ~ .mybid-content{ display:block; }
+
+/* ✅ 只調整 Issue 的狀態徽章，不影響上方專案狀態 */
+.v5-issue-badge{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 22px;
+  padding: 0 10px;
+  line-height: 1;
+  border-radius: 999px;
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+/* ✅ Issues 標題 + 新增按鈕同層平行 */
+.v5-issues-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:flex-end;
+  gap:12px;
+  margin: 35px 0 35px;
+  padding-left:20px;
+  padding-right:20px;
+}
+
+.v5-issues-title{
+  margin:0;
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+.v5-issues-addbtn{ white-space:nowrap; }
+
+.v5-meta-line{
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 10px;
+}
+
+/* ===== Issue Modal 底部左右操作 ===== */
+.issue-modal-actions{
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-top: 14px;
+  gap: 12px;
+}
+
+.issue-actions-left{
+  flex: 0 0 auto;
+}
+
+.issue-actions-right{
+  flex: 0 0 auto;
+}
+
+</style>
+
+<script>
+  const ISSUE_MODAL = { issueId: null };
+
+  function openReviewModal(){
+    closeReviewsModal();
+    const m = document.getElementById('reviewModal');
+    if (!m) return;
+    m.classList.add('is-open');
+    m.setAttribute('aria-hidden','false');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeReviewModal(){
+    const m = document.getElementById('reviewModal');
+    if (!m) return;
+    m.classList.remove('is-open');
+    m.setAttribute('aria-hidden','true');
+    document.body.style.overflow = '';
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    closeReviewModal();
+    closeReviewsModal();
+    closeIssueModal();
+  });
+
+  document.addEventListener('DOMContentLoaded', () => {
+    const shouldOpen = {{ 'true' if open_review else 'false' }};
+    if (shouldOpen) openReviewModal();
+  });
+
+  // 查案評論
+  let REV = { userId: null, target: null, page: 1, totalPages: 1 };
+
+  function openReviewsModal(userId, target, title){
+    closeReviewModal();
+    REV.userId = userId;
+    REV.target = target;
+    REV.page = 1;
+
+    document.getElementById('reviewsModalTitle').textContent = title || '歷來評論';
+
+    const m = document.getElementById('reviewsModal');
+    m.classList.add('is-open');
+    m.setAttribute('aria-hidden','false');
+    document.body.style.overflow = 'hidden';
+
+    loadReviewsPage(1);
+  }
+
+  function closeReviewsModal(){
+    const m = document.getElementById('reviewsModal');
+    if (!m) return;
+    m.classList.remove('is-open');
+    m.setAttribute('aria-hidden','true');
+    document.body.style.overflow = '';
+    REV = { userId: null, target: null, page: 1, totalPages: 1 };
+  }
+
+  async function loadReviewsPage(page){
+    if (!REV.userId || !REV.target) return;
+
+    const metaEl = document.getElementById('reviewsModalMeta');
+    const listEl = document.getElementById('reviewsModalList');
+
+    metaEl.textContent = '載入中...';
+    listEl.innerHTML = '';
+
+    const resp = await fetch(`/api/reviews?target=${encodeURIComponent(REV.target)}&user_id=${REV.userId}&page=${page}`);
+    if (!resp.ok){
+      metaEl.textContent = '載入失敗';
+      return;
+    }
+
+    const data = await resp.json();
+    REV.page = data.page;
+    REV.totalPages = data.total_pages;
+
+    if (REV.page > REV.totalPages) REV.page = REV.totalPages;
+    if (REV.page < 1) REV.page = 1;
+
+    metaEl.textContent = `第 ${REV.page} / ${REV.totalPages} 頁（共 ${data.total} 則）`;
+
+    // ✅ 這行新增：依 target 決定維度文字
+    const [L1, L2, L3] = dimLabelsByTarget(REV.target);
+
+    if (!data.items || data.items.length === 0){
+      listEl.innerHTML = `<div class="v5-empty-state-small">目前尚無評論。</div>`;
+    } else {
+      const html = data.items.map(x => {
+        const comment = (x.comment && x.comment.trim()) ? x.comment : '（無留言）';
+        const d1 = (x.dim1 ?? '—');
+        const d2 = (x.dim2 ?? '—');
+        const d3 = (x.dim3 ?? '—');
+
+        return `
+          <div class="v5-list-item-flow" style="margin-bottom:10px;">
+            <div class="v5-flow-meta">
+              來自：${escapeHtml(x.rater_username || '匿名')} ｜ ${escapeHtml(x.created_at || '')}
+            </div>
+            <div class="v5-flow-meta" style="margin-top:4px; opacity: .75; font-size: 13px;">
+              ${escapeHtml(L1)}：${escapeHtml(d1)}｜
+              ${escapeHtml(L2)}：${escapeHtml(d2)}｜
+              ${escapeHtml(L3)}：${escapeHtml(d3)}
+            </div>
+            <div class="v5-flow-desc" style="margin-top:6px;">
+              ${escapeHtml(comment)}
+            </div>
+          </div>
+        `;
+      }).join('');
+      listEl.innerHTML = html;
+    }
+
+    const prevBtn = document.getElementById('reviewsPrevBtn');
+    const nextBtn = document.getElementById('reviewsNextBtn');
+    prevBtn.disabled = (REV.page <= 1);
+    nextBtn.disabled = (REV.page >= REV.totalPages);
+
+    prevBtn.onclick = () => loadReviewsPage(REV.page - 1);
+    nextBtn.onclick = () => loadReviewsPage(REV.page + 1);
+  }
+
+
+  function escapeHtml(s){
+    return String(s)
+      .replaceAll('&','&amp;')
+      .replaceAll('<','&lt;')
+      .replaceAll('>','&gt;')
+      .replaceAll('"','&quot;')
+      .replaceAll("'","&#39;");
+  }
+
+  // =========================
+  // ✅ Issue UI（列表/留言/解決）
+  // =========================
+  const ISSUE = { projectId: {{ project.id }} };
+
+  async function loadIssues(){
+    const listEls = document.querySelectorAll('.issuesList');
+    if (!listEls.length) return;
+
+    listEls.forEach(el => el.innerHTML = `<div class="v5-empty-state-small">載入中...</div>`);
+
+    const resp = await fetch(`/api/issues?project_id=${ISSUE.projectId}`);
+    if (!resp.ok){
+      listEls.forEach(el => el.innerHTML = `<div class="v4-alert danger">載入 Issue 失敗</div>`);
+      return;
+    }
+
+    const data = await resp.json();
+    const items = data.items || [];
+
+    const openCount = items.filter(it => String(it.status || '').toLowerCase() === 'open').length;
+
+    const cEl = document.getElementById('issueOpenCountClient');
+    if (cEl) cEl.textContent = openCount;
+
+    const fEl = document.getElementById('issueOpenCountFreelancer');
+    if (fEl) fEl.textContent = openCount;
+
+    if (!items.length){
+      if (cEl) cEl.textContent = 0;
+      if (fEl) fEl.textContent = 0;
+      listEls.forEach(el => el.innerHTML = `<div class="v5-empty-state-small">目前尚未建立任何 Issue。</div>`);
+      return;
+    }
+
+    const isClient = {{ 'true' if user and user.role == 'client' and user.id == project.client_id else 'false' }};
+
+    const html = items.map(it => {
+      const st = (it.status || '').toLowerCase();
+      const isOpen = (st === 'open');
+      const badge = isOpen ? 'warn' : 'ok';
+      const badgeText = isOpen ? '未完成' : '已完成';
+
+      return `
+        <div class="v5-list-item-flow" style="margin-bottom:10px;">
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:10px;">
+            <div>
+              <div class="v5-flow-title">#${it.issue_no ?? it.id}【 ${escapeHtml(it.title || '')} 】</div>
+              <div class="v5-flow-meta" style="margin-top:4px;">
+                狀態：<span class="v5-detail-tag v5-issue-badge ${badge}">${badgeText}</span>
+                <span style="margin-left:8px; opacity:.75;">留言 ${it.comment_count ?? 0} 則</span>
+              </div>
+            </div>
+
+            <div style="display:flex; gap:8px; align-items:center;">
+              <button type="button" class="btn btn-sm btn-outline" onclick="openIssueModal(${it.id})">查看</button>
+
+              ${isClient && isOpen ? `
+                <button type="button"
+                        class="btn btn-sm btn-success"
+                        onclick="resolveIssue(${it.id})">
+                  ✅ 設為已完成
+                </button>
+              ` : ``}
+            </div>
+          </div>
+
+          <div class="v5-flow-desc" style="margin-top:8px;">
+            ${escapeHtml(it.description || '')}
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    listEls.forEach(el => el.innerHTML = html);
+  }
+
+  async function openIssueModal(issueId){
+    ISSUE_MODAL.issueId = issueId;
+
+    const modal = document.getElementById('issueModal');
+    modal.classList.add('is-open');
+    modal.setAttribute('aria-hidden','false');
+    document.body.style.overflow = 'hidden';
+
+    await loadIssueIntoModal(issueId);
+  }
+
+  function closeIssueModal(){
+    const modal = document.getElementById('issueModal');
+    if (!modal) return;
+    modal.classList.remove('is-open');
+    modal.setAttribute('aria-hidden','true');
+    document.body.style.overflow = '';
+    ISSUE_MODAL.issueId = null;
+  }
+
+  async function loadIssueIntoModal(issueId){
+    const titleEl = document.getElementById('issueModalTitle');
+    const metaEl  = document.getElementById('issueModalMeta');
+    const descEl  = document.getElementById('issueModalDesc');
+    const commEl  = document.getElementById('issueModalComments');
+    const formEl  = document.getElementById('issueCommentForm');
+    const resolveEl = document.getElementById('issueResolveArea');
+
+    titleEl.textContent = 'Issue';
+    metaEl.textContent = '';
+    descEl.textContent = '';
+    commEl.innerHTML = '載入中...';
+    resolveEl.innerHTML = '';
+
+    const resp = await fetch(`/api/issues?project_id=${ISSUE.projectId}`);
+    const data = await resp.json();
+    const issue = (data.items || []).find(x => String(x.id) === String(issueId));
+    if (!issue){
+      commEl.innerHTML = 'Issue 不存在';
+      return;
+    }
+
+    const st = (issue.status || '').toLowerCase();
+
+    titleEl.textContent = `🧩 #${issue.issue_no ?? issue.id} ${issue.title}`;;
+    metaEl.textContent = `狀態：${st === 'open' ? '未完成' : '已完成'} ｜ 建立於 ${issue.created_at}`;
+    descEl.textContent = issue.description || '';
+
+    await loadIssueCommentsIntoModal(issueId);
+
+    formEl.action = `/projects/${ISSUE.projectId}/issues/${issueId}/comment`;
+
+    if (st !== 'open') formEl.style.display = 'none';
+    else formEl.style.display = '';
+
+    const isClient = {{ 'true' if user and user.role == 'client' and user.id == project.client_id else 'false' }};
+    if (isClient && st === 'open'){
+      resolveEl.innerHTML = `
+        <button type="button" class="btn btn-success btn-sm" onclick="resolveIssue(${issueId})">
+          ✅ 設為已完成
+        </button>
+      `;
+    }
+  }
+
+  async function loadIssueCommentsIntoModal(issueId){
+    const box = document.getElementById('issueModalComments');
+    box.innerHTML = '載入中...';
+
+    const resp = await fetch(`/api/issue_comments?project_id=${ISSUE.projectId}&issue_id=${issueId}`);
+    const data = await resp.json();
+
+    if (!data.items || data.items.length === 0){
+      box.innerHTML = `<div class="v5-empty-state-small">尚無留言。</div>`;
+      return;
+    }
+
+    box.innerHTML = data.items.map(x => `
+      <div class="v5-list-item-flow">
+        <div class="v5-flow-meta">
+          ${escapeHtml(x.username || '')}（${escapeHtml(x.role || '')}）｜${escapeHtml(x.created_at || '')}
+        </div>
+        <div class="v5-flow-desc">${escapeHtml(x.content || '')}</div>
+      </div>
+    `).join('');
+  }
+
+  async function resolveIssue(issueId){
+    if (!confirm('確定將此 Issue 設為已完成嗎？')) return;
+
+    const resp = await fetch(`/projects/${ISSUE.projectId}/issues/${issueId}/resolve`, {
+      method: 'POST',
+    });
+
+    const data = await resp.json().catch(()=>null);
+
+    if (!resp.ok || !data || !data.ok){
+      alert(`設為已完成失敗（${resp.status}）`);
+      return;
+    }
+
+    showIssueAlert('✅ 已設為已完成');
+    await loadIssues();
+
+    if (ISSUE_MODAL.issueId === issueId){
+      await loadIssueIntoModal(issueId);
+    }
+  }
+
+  document.addEventListener('DOMContentLoaded', () => {
+    if (document.querySelectorAll('.issuesList').length > 0) loadIssues();
+
+    const issueForm = document.getElementById('issueCreateForm');
+    if (issueForm){
+      issueForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        const fd = new FormData(issueForm);
+        const resp = await fetch(issueForm.action, { method: 'POST', body: fd });
+
+        if (!resp.ok){
+          alert('新增 Issue 失敗');
+          return;
+        }
+
+        issueForm.querySelector('input[name="title"]').value = '';
+        issueForm.querySelector('textarea[name="description"]').value = '';
+
+        await loadIssues();
+        showIssueAlert('✅ 已新增 Issue');
+        closeCreateIssueModal();
+      });
+    }
+
+    const commentForm = document.getElementById('issueCommentForm');
+    if (commentForm){
+      commentForm.addEventListener('submit', async (e) => {
+        e.preventDefault();
+
+        if (!ISSUE_MODAL.issueId){
+          alert('找不到 Issue');
+          return;
+        }
+
+        const fd = new FormData(commentForm);
+        const resp = await fetch(commentForm.action, { method: 'POST', body: fd });
+
+        if (resp.status === 409) {
+          alert('此 Issue 已完成，無法再留言。');
+          await loadIssueIntoModal(ISSUE_MODAL.issueId);
+          await loadIssues();
+          return;
+        }
+
+        if (!resp.ok){
+          alert('留言送出失敗');
+          return;
+        }
+
+        commentForm.querySelector('textarea[name="content"]').value = '';
+
+        await loadIssueIntoModal(ISSUE_MODAL.issueId);
+        await loadIssues();
+        showIssueAlert('✅ 已送出留言');
+      });
+    }
+  });
+
+  function showIssueAlert(msg, type='success'){
+    const areas = document.querySelectorAll('.issueAlertArea');
+    if (!areas.length) return;
+
+    const cls = (type === 'danger') ? 'danger' : (type === 'warn') ? 'warn' : 'success';
+    areas.forEach(a => {
+      a.innerHTML = `<div class="v4-alert ${cls}" style="margin-bottom:10px;">${escapeHtml(msg)}</div>`;
+    });
+
+    setTimeout(() => {
+      areas.forEach(a => { a.innerHTML = ''; });
+    }, 2500);
+  }
+
+  function openCreateIssueModal(){
+    const m = document.getElementById('createIssueModal');
+    if (!m) return;
+    m.classList.add('is-open');
+    m.setAttribute('aria-hidden','false');
+    document.body.style.overflow = 'hidden';
+  }
+
+  function closeCreateIssueModal(){
+    const m = document.getElementById('createIssueModal');
+    if (!m) return;
+    m.classList.remove('is-open');
+    m.setAttribute('aria-hidden','true');
+    document.body.style.overflow = '';
+  }
+
+  function dimLabelsByTarget(target){
+    if (target === 'client'){
+      return ['需求合理性', '驗收難度', '合作態度'];
+    }
+    // 預設 freelancer
+    return ['品質', '效率', '態度'];
+  }
+
+  function renderStars(score){
+    const n = Number(score);
+    if (!Number.isFinite(n)) return '—';
+    const s = Math.max(0, Math.min(5, Math.round(n)));
+    return '★'.repeat(s) + '☆'.repeat(5 - s);
+  }
+
+</script>
+
+{% endblock %}

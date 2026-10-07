@@ -1,0 +1,294 @@
+{% extends "base.html" %}
+{% block title %}專案列表{% endblock %}
+
+{% block content %}
+<div class="list-container-v5">
+
+  {# 儀表板標題區 #}
+  <header class="v5-header-controls">
+    <div class="v5-header-title-group">
+      {% if user and user.role == 'client' %}
+        <h1 class="v5-title">💼 委託人儀表板</h1>
+        <p class="v5-subtitle">管理您發佈的專案並追蹤報價與進度。</p>
+      {% elif user and user.role == 'freelancer' %}
+        <h1 class="v5-title">🎯 接案工作台</h1>
+        <p class="v5-subtitle">瀏覽可投標的專案，或查看您進行中的工作。</p>
+      {% else %}
+        <h1 class="v5-title">🌟 公開專案列表</h1>
+        <p class="v5-subtitle">查看最新專案，歡迎註冊加入合作。</p>
+      {% endif %}
+    </div>
+
+    {# 狀態篩選與統計 - 使用精緻的 Tab 按鈕 #}
+    {% if user %}
+    <div class="v5-tabs-group">
+      <a href="/?tab=open" class="v5-tab-btn {{ 'active' if tab=='open' else '' }}">
+        {% if user.role == 'client' %}投放中{% else %}可接案{% endif %} ({{ stats.open }})
+      </a>
+      <a href="/?tab=progress" class="v5-tab-btn {{ 'active' if tab=='progress' else '' }}">
+        進行中 ({{ stats.progress }})
+        {% if has_new_progress %}
+          <span class="v5-dot"></span>
+        {% endif %}
+      </a>
+
+      <a href="/?tab=closed" class="v5-tab-btn {{ 'active' if tab=='closed' else '' }}">
+        歷史紀錄 ({{ stats.closed }})
+        {% if has_new_closed %}
+          <span class="v5-dot"></span>
+        {% endif %}
+      </a>
+    </div>
+    {% endif %}
+  </header>
+
+  <form method="get" action="/" class="project-search-form">
+    <input
+      type="text"
+      name="q"
+      placeholder="搜尋專案關鍵字"
+      value="{{ request.query_params.get('q','') }}"
+      class="project-search-input"
+    >
+    <button type="submit" class="btn btn-sm btn-primary">搜尋</button>
+    {% if q %}
+      <a class="btn btn-sm btn-clear" href="/?tab={{ tab }}">清除</a>
+    {% endif %}
+  </form>
+
+  {# 專案卡片網格區 #}
+  <div class="v5-grid-wrapper">
+    {% if projects|length %}
+      <div class="v5-project-grid">
+        {% for p in projects %}
+
+        {# ✅ 到期判斷：只有「委託人 + tab=open + 專案open」才需要提醒可選標 #}
+        {% set is_expired = (user and user.role=='client' and tab=='open' and p.status=='open' and p.deadline and now and p.deadline <= now) %}
+
+        <div class="v5-card-item
+          is-{{ 'open' if p.status=='open' else ('progress' if p.status=='in_progress' else ('reopened' if p.status=='reopened' else 'closed')) }}
+          {{ 'is-expired' if is_expired else '' }}
+        ">
+
+          <a class="v5-card-link" href="/projects/{{ p.id }}" aria-label="查看 {{ p.title }}"></a>
+
+          <div class="v5-project-card">
+            <div class="v5-card-header">
+              <span class="v5-seq-chip">#{{ loop.index }}</span>
+
+              <div class="v5-header-right">
+                {% if tab == "progress" and p.status in ["in_progress", "reopened"] and (p.has_new_issue|default(false)) %}
+                  <span class="v5-badge purple v5-badge-mini">有新留言</span>
+                {% endif %}
+                <span class="v5-card-status-dot"></span>
+              </div>
+            </div>
+
+
+            <h3 class="v5-card-title">{{ p.title }}</h3>
+            <p class="v5-card-excerpt">{{ p.description }}</p>
+
+            <div class="v5-card-footer">
+              <div class="v5-meta-stack">
+                <span class="v5-meta-info">建立: {{ p.created_at }}</span>
+
+                {% if p.deadline %}
+                  <span class="v5-meta-info v5-deadline-info">投標截止日: {{ p.deadline }}</span>
+                {% else %}
+                  <span class="v5-meta-info v5-deadline-info muted">投標截止日: 未設定</span>
+                {% endif %}
+              </div>
+
+              <div class="v5-footer-badges">
+
+              {# 1) 歷史頁：未評價最優先 #}
+              {% if tab == "closed" and (p.needs_review|default(false)) %}
+                <span class="v5-badge warn">未評價</span>
+
+              {# 2) 退件（reopened）一定要顯示 #}
+              {% elif p.status == "reopened" %}
+                <span class="v5-badge red">退件</span>
+
+              {# 3) 待審核：進行中 or 退件 + 有交付檔 #}
+              {% elif p.status in ["in_progress", "reopened"]
+                    and (p.has_delivery or (p.delivery_count|default(0) > 0) or (p.my_delivery_count|default(0) > 0)) %}
+                <span class="v5-badge review">待審核</span>
+
+              {# 4) 委託人 open：顯示報價數（含到期提醒底色那張） #}
+              {% elif user and user.role == "client" and tab == "open" and p.bid_count is defined %}
+                <span class="v5-badge blue">📝 {{ p.bid_count }} 報價</span>
+
+              {# 5) 接案人 open：已投標 #}
+              {% elif user and user.role == "freelancer" and tab == "open" and (p.has_bid|default(false)) %}
+                <span class="v5-badge yellow">已投標</span>
+
+              {# 6) 其他狀態文字 #}
+              {% else %}
+                {% if p.status == "open" %}
+                  <span class="v5-status-text">
+                    {% if user and user.role=="client" %}投放中{% else %}可接案{% endif %}
+                  </span>
+                {% elif p.status == "in_progress" %}
+                  <span class="v5-status-text">進行中</span>
+                {% else %}
+                  <span class="v5-status-text">已結案</span>
+                {% endif %}
+              {% endif %}
+
+            </div>
+
+            </div>
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="v4-empty-state">
+        <p>目前沒有符合條件的專案。</p>
+      </div>
+    {% endif %}
+  </div>
+</div>
+
+<style>
+  .project-search-form {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 20px;
+  }
+
+  .project-search-input {
+    width: 280px;
+    height: 36px;
+    max-width: 100%;
+    padding: 10px 12px;
+    padding-left: 15px;
+    border-radius: 10px;
+    border: 1px solid #052462;
+    background: #fff;
+  }
+  .project-search-input:focus {
+    outline: none;
+    border-color: #6366f1;
+    box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+  }
+
+  .btn-clear {
+    padding: 8px 14px;
+    font-size: 14px;
+    line-height: 1;
+    border: 1px solid #1a1818;
+    background: #1a1818;
+    color: #fff;
+    height: 39px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: all 0.15s ease;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .btn-clear:hover { color: #ede5e5; }
+
+  .v5-meta-stack{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .v5-deadline-info{ opacity:.92; }
+  .v5-deadline-info.muted{ opacity:.55; }
+
+  /* ✅ 新增：到期可選標的卡片底色提醒 */
+  .v5-card-item.is-expired .v5-project-card{
+    background: #fff7e6;
+    border: 1px solid #f3c27a;
+    box-shadow: 0 0 0 3px rgba(243, 194, 122, .18);
+  }
+
+  /* 讓卡片內容能「底部對齊」 */
+  .v5-project-card{
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+  }
+
+  /* 卡片距離 */
+  .v5-card-item{
+    margin-bottom: 3px; 
+  }
+
+  /* 底部那條（時間 + badges）永遠貼齊卡片底部 */
+  .v5-card-footer{
+    margin-top: auto;
+  }
+
+  /* 描述固定行數，避免卡片高度被內容撐開 */
+  .v5-card-excerpt{
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+  }
+
+  /* ✅ badge 顏色 */
+  .v5-badge.purple{
+    background:#4f46e5;
+    color:#fff;
+  }
+
+  .v5-tab-btn{
+    position: relative;
+    padding-left: 20px;
+    padding-right: 20px;
+  }
+
+  .v5-dot{
+    position:absolute;
+    top:8px;
+    right:8px;
+    width:8px;
+    height:8px;
+    background:#ef4444;
+    border-radius:50%;
+    box-shadow: 0 0 0 2px #fff;
+  }
+
+  .v5-badge.warn{
+    background:#eef2ff;     /* 淡紫藍 */
+    color:#3730a3;          /* 深藍紫 */
+    border:1px solid #c7d2fe;
+    font-weight:800;
+  }
+
+  /* ✅ 2) 右上角：badge 在 dot 左邊 */
+  .v5-card-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+  }
+
+  .v5-header-right{
+    display:flex;
+    align-items:center;
+    gap:8px; /* badge 和 dot 的距離 */
+  }
+
+  /* badge 做小一點比較像狀態提示 */
+  .v5-badge-mini{
+    padding: 4px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    line-height: 1;
+    font-weight: 700;
+  }
+
+  /* ✅ 待審核：橘色（貼近進行中提示色） */
+  .v5-badge.review {
+    background: #ffedd5;   /* 淡橘底 */
+    color: #9a3412;        /* 深橘字 */
+    border: 1px solid #fed7aa;
+    font-weight: 800;
+  }
+</style>
+{% endblock %}

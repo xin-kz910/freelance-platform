@@ -1,0 +1,127 @@
+{% extends "base.html" %}
+{% block title %}建立專案{% endblock %}
+
+{% block content %}
+<div class="v5-form-container">
+  <div class="section-card v4-card">
+    <h2 class="v5-form-title">發佈新專案</h2>
+
+    {% if request.query_params.get('err') == '1' %}
+      <div class="v4-alert danger">標題與預算為必填。</div>
+    {% elif request.query_params.get('err') == '2' %}
+      <div class="v4-alert danger">需求細節/額外補充至少填寫一個欄位。</div>
+    {% elif request.query_params.get('err') == 'deadline' %}
+      <div class="v4-alert danger">投標截止日為必填。</div>
+    {% elif request.query_params.get('err') == 'deadline_format' %}
+      <div class="v4-alert danger">投標截止日格式不正確，請用日曆重新選一次。</div>
+    {% endif %}
+
+    <form action="/projects/create" method="post" class="form" id="project-form">
+
+      <h3 class="v5-section-title" style="margin-top:0;">基本資料</h3>
+
+      <div class="field">
+        <label>專案名稱</label>
+        <input type="text" id="title" name="title" required>
+      </div>
+
+      {# ✅ 截止日搬到基本資料，且必填、日曆可直接選（datetime-local） #}
+      <div class="field">
+        <label>投標截止日</label>
+        <input type="datetime-local" id="deadline" name="deadline" required>
+        <small class="help">格式固定，請直接用日曆選擇。</small>
+      </div>
+
+      <h3 class="v5-section-title">需求細節（至少填一項）</h3>
+
+      <div class="v5-structured-form-grid">
+        <div class="field">
+          <label>需求類型</label>
+          <input type="text" name="req_type" placeholder="例如: 網站開發/UI設計">
+        </div>
+
+        <div class="field">
+          <label>最終交付物</label>
+          <input type="text" name="req_deliverable" placeholder="例如: 5頁響應式網頁圖稿">
+        </div>
+
+        <div class="field">
+          <label>預期時程/截止日期</label>
+          <input type="text" name="req_deadline" placeholder="例如: 兩週內 / 2026-01-01">
+        </div>
+
+        <div class="field">
+          <label>預計工時</label>
+          <input type="text" name="req_hours" placeholder="例如: 總共 40 小時">
+        </div>
+      </div>
+
+      <h3 class="v5-section-title">額外補充</h3>
+      <div class="field">
+        <label>風格參考與驗收標準</label>
+        <textarea name="req_notes" rows="5"
+          placeholder="請附上風格參考連結、詳細的驗收標準或特別的技術要求..."></textarea>
+        <div class="help">這部分將原封不動地顯示在專案詳情頁。</div>
+      </div>
+
+      <h3 class="v5-section-title">預算與送出</h3>
+
+      <div class="field">
+        <label for="budget">預算（元）</label>
+        <input id="budget" name="budget" type="number" min="0" step="100" required
+              placeholder="例如 5000" list="budget-steps" />
+        <datalist id="budget-steps">
+          <option value="1000"></option>
+          <option value="3000"></option>
+          <option value="5000"></option>
+          <option value="10000"></option>
+          <option value="20000"></option>
+        </datalist>
+        <small class="help">可自行輸入，上下鍵以 100 為增減單位。</small>
+      </div>
+
+      <div class="form-actions">
+        <button type="submit" class="btn btn-primary">送出專案</button>
+        <a href="/" class="btn btn-outline">取消</a>
+      </div>
+    </form>
+  </div>
+</div>
+
+<script>
+  (function () {
+    const form = document.getElementById('project-form');
+    if (!form) return;
+
+    form.addEventListener('submit', (e) => {
+      const title = document.getElementById('title')?.value.trim();
+      const budget = document.getElementById('budget')?.value.trim();
+      const deadline = document.getElementById('deadline')?.value.trim();
+
+      const reqType = form.querySelector('[name="req_type"]')?.value.trim();
+      const deliverable = form.querySelector('[name="req_deliverable"]')?.value.trim();
+      const reqDeadline = form.querySelector('[name="req_deadline"]')?.value.trim();
+      const hours = form.querySelector('[name="req_hours"]')?.value.trim();
+      const notes = form.querySelector('[name="req_notes"]')?.value.trim();
+
+      if (!title || !budget) {
+        alert('標題與預算為必填。');
+        e.preventDefault();
+        return;
+      }
+
+      if (!deadline) {
+        alert('投標截止日為必填。');
+        e.preventDefault();
+        return;
+      }
+
+      const hasAnyDetail = !!reqType || !!deliverable || !!reqDeadline || !!hours || !!notes;
+      if (!hasAnyDetail) {
+        alert('需求細節/額外補充至少填寫一個欄位。');
+        e.preventDefault();
+      }
+    });
+  })();
+</script>
+{% endblock %}
